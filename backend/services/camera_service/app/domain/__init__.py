@@ -1,0 +1,1 @@
+# Camera domain package
