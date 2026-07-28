@@ -11,8 +11,8 @@ import time
 from uuid import uuid4
 import pytest
 
-from backend.ai-pipeline.base_contracts import FrameContext
-from backend.ai-pipeline.orchestrator import PipelineOrchestrator
+from backend.ai_pipeline.base_contracts import FrameContext
+from backend.ai_pipeline.orchestrator import PipelineOrchestrator
 
 
 @pytest.mark.asyncio
@@ -49,7 +49,5 @@ async def test_nfr1_latency_benchmark():
     print(f"\n[BENCHMARK RESULT] Processed {total_frames} frames.")
     print(f"[BENCHMARK RESULT] Avg Latency: {avg_latency:.3f} ms | P95 Latency: {p95_latency:.3f} ms")
 
-    # NFR-1 Requirement: Latency < 3,000 ms (3 seconds p95)
     assert p95_latency < 3000.0, f"P95 latency {p95_latency:.2f}ms exceeded 3000ms threshold!"
-    # In-process engine should be ultra fast (< 50ms p95)
     assert p95_latency < 50.0, f"In-process pipeline latency unexpectedly high: {p95_latency:.2f}ms"

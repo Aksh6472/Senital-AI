@@ -8,13 +8,13 @@ import asyncio
 from uuid import uuid4
 import pytest
 
-from backend.ai-pipeline.base_contracts import DetectionBox, FrameContext
-from backend.ai-pipeline.inference_services.object_detection.detector import ObjectDetector
-from backend.ai-pipeline.inference_services.tracking.tracker import MultiObjectTracker
-from backend.ai-pipeline.inference_services.action_recognition.recognizer import ActionRecognizer
-from backend.ai-pipeline.aggregator.confidence_aggregator import ConfidenceAggregator
-from backend.ai-pipeline.decision_engine.engine import DecisionEngine
-from backend.ai-pipeline.orchestrator import PipelineOrchestrator
+from backend.ai_pipeline.base_contracts import DetectionBox, FrameContext
+from backend.ai_pipeline.inference_services.object_detection.detector import ObjectDetector
+from backend.ai_pipeline.inference_services.tracking.tracker import MultiObjectTracker
+from backend.ai_pipeline.inference_services.action_recognition.recognizer import ActionRecognizer
+from backend.ai_pipeline.aggregator.confidence_aggregator import ConfidenceAggregator
+from backend.ai_pipeline.decision_engine.engine import DecisionEngine
+from backend.ai_pipeline.orchestrator import PipelineOrchestrator
 
 
 def test_stage1_object_detection():
@@ -41,7 +41,6 @@ def test_stage2_multi_object_tracking():
     assert len(tracks1) == 1
     initial_id = tracks1[0].track_id
 
-    # Frame 2: slightly shifted bbox (continuous tracking)
     det2 = [DetectionBox(class_name="person", confidence=0.92, bbox=[0.12, 0.10, 0.20, 0.40])]
     tracks2 = tracker.update(det2, ctx2)
     assert len(tracks2) == 1
@@ -53,14 +52,13 @@ def test_stage3_action_recognition_fall():
     recognizer = ActionRecognizer()
     ctx = FrameContext(camera_id=uuid4(), site_id=uuid4(), frame_index=1)
     
-    # Person with high downward velocity dy=0.06 and horizontal aspect ratio (w > h)
-    from backend.ai-pipeline.base_contracts import TrackedObject
+    from backend.ai_pipeline.base_contracts import TrackedObject
     tracked_person = TrackedObject(
         track_id=1,
         class_name="person",
         confidence=0.88,
-        bbox=[0.3, 0.4, 0.4, 0.2],  # width=0.4, height=0.2 (collapsed)
-        velocity=[0.0, 0.06],       # downward movement
+        bbox=[0.3, 0.4, 0.4, 0.2],
+        velocity=[0.0, 0.06],
     )
     actions = recognizer.analyze_actions([tracked_person], [], ctx)
     assert len(actions) == 1
@@ -72,13 +70,11 @@ def test_stage4_single_frame_noise_suppression():
     cam_id = uuid4()
     site_id = uuid4()
 
-    # Push 10 frames: frame 5 has noisy weapon detection, others have none
     for f in range(10):
         ctx = FrameContext(camera_id=cam_id, site_id=site_id, frame_index=f)
         dets = [DetectionBox("weapon", 0.95, [0.1, 0.1, 0.1, 0.1])] if f == 5 else []
         sig = aggregator.push_and_aggregate(dets, [], [], ctx)
 
-    # Multi-frame consensus should filter out the single-frame noise
     assert len(sig.detected_objects) == 0
     assert sig.aggregated_confidence == 0.0
 
@@ -94,7 +90,6 @@ async def test_end_to_end_pipeline_weapon_incident():
         {"class_name": "weapon", "confidence": 0.85, "bbox": [0.22, 0.25, 0.08, 0.08]},
     ]
 
-    # Run 15 continuous frames to build temporal window consensus
     final_decision = None
     for f in range(15):
         ctx = FrameContext(camera_id=cam_id, site_id=site_id, frame_index=f)
