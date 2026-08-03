@@ -1,0 +1,205 @@
+version: '3.8'
+
+services:
+  # ── PostgreSQL Database (with PostGIS spatial support) ───────────────────
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: sentinel-postgres
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel_ai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./04_database_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./infra/docker/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis Cache & Live Messaging ──────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: sentinel-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── MinIO S3-Compatible Storage (Evidence Buffer Store) ─────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: sentinel-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Helper service to automatically initialize MinIO S3 bucket on startup
+  minio-init:
+    image: minio/mc:latest
+    container_name: sentinel-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+      mc alias set localminio http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing localminio/sentinel-evidence;
+      exit 0;
+      "
+
+  # ── Backend Microservices ────────────────────────────────────────────────
+  
+  auth-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-auth-service
+    environment:
+      - SERVICE_NAME=auth_service
+      - DATABASE_URL=postgresql+asyncpg://sentinel:sentinel@postgres:5432/sentinel_ai
+      - JWT_SECRET_KEY=change-me-to-a-real-secret-at-least-32-chars
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/auth/me"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  camera-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-camera-service
+    environment:
+      - SERVICE_NAME=camera_service
+      - DATABASE_URL=postgresql+asyncpg://sentinel:sentinel@postgres:5432/sentinel_ai
+      - JWT_SECRET_KEY=change-me-to-a-real-secret-at-least-32-chars
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/cameras"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  incident-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-incident-service
+    environment:
+      - SERVICE_NAME=incident_service
+      - DATABASE_URL=postgresql+asyncpg://sentinel:sentinel@postgres:5432/sentinel_ai
+      - JWT_SECRET_KEY=change-me-to-a-real-secret-at-least-32-chars
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET_NAME=sentinel-evidence
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/incidents"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  notification-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-notification-service
+    environment:
+      - SERVICE_NAME=notification_service
+      - DATABASE_URL=postgresql+asyncpg://sentinel:sentinel@postgres:5432/sentinel_ai
+      - JWT_SECRET_KEY=change-me-to-a-real-secret-at-least-32-chars
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/notification-policies"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  admin-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-admin-service
+    environment:
+      - SERVICE_NAME=admin_service
+      - DATABASE_URL=postgresql+asyncpg://sentinel:sentinel@postgres:5432/sentinel_ai
+      - JWT_SECRET_KEY=change-me-to-a-real-secret-at-least-32-chars
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/users"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── API Gateway (Ingress Route Manager) ──────────────────────────────────
+  nginx-gateway:
+    image: nginx:alpine
+    container_name: sentinel-nginx-gateway
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./infra/docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth-service
+      - camera-service
+      - incident-service
+      - notification-service
+      - admin-service
+
+  # ── Next.js Frontend Dashboard ───────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sentinel-frontend
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+    depends_on:
+      - nginx-gateway
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

@@ -1,0 +1,466 @@
+# ============================================================================
+# 1. AUTH SERVICE
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: sentinel-ai
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+  selector:
+    app: auth-service
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: sentinel-ai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+        - name: service
+          image: sentinel-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: SERVICE_NAME
+              value: "auth_service"
+            - name: DATABASE_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_USER
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: database-password
+            - name: DATABASE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_HOST
+            - name: DATABASE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_PORT
+            - name: DATABASE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_NAME
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: jwt-secret-key
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+# ============================================================================
+# 2. CAMERA MANAGEMENT SERVICE
+# ============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: camera-service
+  namespace: sentinel-ai
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+  selector:
+    app: camera-service
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: camera-service
+  namespace: sentinel-ai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: camera-service
+  template:
+    metadata:
+      labels:
+        app: camera-service
+    spec:
+      containers:
+        - name: service
+          image: sentinel-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: SERVICE_NAME
+              value: "camera_service"
+            - name: DATABASE_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_USER
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: database-password
+            - name: DATABASE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_HOST
+            - name: DATABASE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_PORT
+            - name: DATABASE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_NAME
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: jwt-secret-key
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+# ============================================================================
+# 3. INCIDENT & EVIDENCE SERVICE
+# ============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: incident-service
+  namespace: sentinel-ai
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+  selector:
+    app: incident-service
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incident-service
+  namespace: sentinel-ai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: incident-service
+  template:
+    metadata:
+      labels:
+        app: incident-service
+    spec:
+      containers:
+        - name: service
+          image: sentinel-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: SERVICE_NAME
+              value: "incident_service"
+            - name: DATABASE_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_USER
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: database-password
+            - name: DATABASE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_HOST
+            - name: DATABASE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_PORT
+            - name: DATABASE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_NAME
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: jwt-secret-key
+            - name: S3_ENDPOINT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: S3_ENDPOINT_URL
+            - name: S3_BUCKET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: S3_BUCKET_NAME
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: s3-access-key
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: s3-secret-key
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+# ============================================================================
+# 4. NOTIFICATION ROUTING SERVICE
+# ============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: sentinel-ai
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+  selector:
+    app: notification-service
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: sentinel-ai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+        - name: service
+          image: sentinel-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: SERVICE_NAME
+              value: "notification_service"
+            - name: DATABASE_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_USER
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: database-password
+            - name: DATABASE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_HOST
+            - name: DATABASE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_PORT
+            - name: DATABASE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_NAME
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: jwt-secret-key
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+# ============================================================================
+# 5. ADMIN & AUDIT LOG SERVICE
+# ============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-service
+  namespace: sentinel-ai
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+  selector:
+    app: admin-service
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-service
+  namespace: sentinel-ai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: admin-service
+  template:
+    metadata:
+      labels:
+        app: admin-service
+    spec:
+      containers:
+        - name: service
+          image: sentinel-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: SERVICE_NAME
+              value: "admin_service"
+            - name: DATABASE_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_USER
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: database-password
+            - name: DATABASE_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_HOST
+            - name: DATABASE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_PORT
+            - name: DATABASE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_NAME
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: jwt-secret-key
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+# ============================================================================
+# 6. FRONTEND NEXT.JS DASHBOARD
+# ============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: sentinel-ai
+spec:
+  ports:
+    - port: 3000
+      targetPort: 3000
+  selector:
+    app: frontend
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: sentinel-ai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: web
+          image: sentinel-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_BASE_URL
+              value: "http://sentinel-ai.local" # Change to target host domain name in production
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10

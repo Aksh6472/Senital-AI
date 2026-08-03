@@ -1,0 +1,384 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: sentinel-ai
+spec:
+  ports:
+    - port: 5432
+  selector:
+    app: postgres
+  clusterIP: None # Headless service for stateful set stability
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: sentinel-ai
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgis/postgis:15-3.3
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-config
+                  key: DATABASE_NAME
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-secrets
+                  key: database-password
+          ports:
+            - containerPort: 5432
+              name: postgres
+          volumeMounts:
+            - name: postgres-persistent-storage
+              mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel_ai"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: postgres-init-config
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-persistent-storage
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 2Gi
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-config
+  namespace: sentinel-ai
+data:
+  01-init.sql: |
+    -- Native PostgreSQL schema extensions
+    CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+    CREATE EXTENSION IF NOT EXISTS "postgis";
+
+    -- Create Identity & CRUD tables
+    CREATE TABLE roles (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name            VARCHAR(50) UNIQUE NOT NULL,
+        description     TEXT,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE permissions (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        code            VARCHAR(100) UNIQUE NOT NULL,
+        description     TEXT
+    );
+
+    CREATE TABLE role_permissions (
+        role_id         UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+        permission_id   UUID NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+        PRIMARY KEY (role_id, permission_id)
+    );
+
+    CREATE TABLE organizations (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name            VARCHAR(255) NOT NULL,
+        type            VARCHAR(50),
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE users (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        email           VARCHAR(255) UNIQUE NOT NULL,
+        password_hash   VARCHAR(255) NOT NULL,
+        full_name       VARCHAR(255) NOT NULL,
+        phone           VARCHAR(30),
+        role_id         UUID NOT NULL REFERENCES roles(id),
+        is_active       BOOLEAN NOT NULL DEFAULT true,
+        mfa_enabled     BOOLEAN NOT NULL DEFAULT false,
+        last_login_at   TIMESTAMPTZ,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        deleted_at      TIMESTAMPTZ
+    );
+
+    CREATE TABLE refresh_tokens (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash      VARCHAR(255) NOT NULL,
+        expires_at      TIMESTAMPTZ NOT NULL,
+        revoked_at      TIMESTAMPTZ,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE sites (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        name            VARCHAR(255) NOT NULL,
+        address         TEXT,
+        location        GEOGRAPHY(POINT, 4326),
+        timezone        VARCHAR(64) NOT NULL DEFAULT 'UTC',
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE zones (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        site_id         UUID NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+        name            VARCHAR(255) NOT NULL,
+        description     TEXT
+    );
+
+    CREATE TABLE cameras (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        site_id             UUID NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+        zone_id             UUID REFERENCES zones(id) ON DELETE SET NULL,
+        name                VARCHAR(255) NOT NULL,
+        stream_type         VARCHAR(20) NOT NULL,
+        stream_url          TEXT,
+        location            GEOGRAPHY(POINT, 4326),
+        status              VARCHAR(20) NOT NULL DEFAULT 'offline',
+        last_heartbeat_at   TIMESTAMPTZ,
+        resolution          VARCHAR(20),
+        fps                 SMALLINT,
+        is_audio_enabled    BOOLEAN NOT NULL DEFAULT false,
+        created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        deleted_at          TIMESTAMPTZ
+    );
+
+    CREATE TABLE camera_detection_modules (
+        camera_id       UUID NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+        module_code     VARCHAR(50) NOT NULL,
+        is_enabled      BOOLEAN NOT NULL DEFAULT true,
+        config          JSONB NOT NULL DEFAULT '{}',
+        PRIMARY KEY (camera_id, module_code)
+    );
+
+    CREATE TABLE incident_types (
+        code            VARCHAR(50) PRIMARY KEY,
+        category        VARCHAR(50) NOT NULL,
+        display_name    VARCHAR(100) NOT NULL,
+        default_severity VARCHAR(20) NOT NULL,
+        default_response TEXT
+    );
+
+    CREATE TABLE incidents (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        incident_type_code  VARCHAR(50) NOT NULL REFERENCES incident_types(code),
+        camera_id           UUID NOT NULL REFERENCES cameras(id),
+        site_id             UUID NOT NULL REFERENCES sites(id),
+        status              VARCHAR(20) NOT NULL DEFAULT 'open',
+        confidence_score    NUMERIC(5,2) NOT NULL,
+        severity            VARCHAR(20) NOT NULL,
+        priority            VARCHAR(20) NOT NULL,
+        detected_objects    JSONB NOT NULL DEFAULT '[]',
+        detected_actions     JSONB NOT NULL DEFAULT '[]',
+        ai_explanation      TEXT,
+        recommended_response TEXT,
+        detected_at         TIMESTAMPTZ NOT NULL,
+        confirmed_by        UUID REFERENCES users(id),
+        confirmed_at        TIMESTAMPTZ,
+        resolved_at         TIMESTAMPTZ,
+        location            GEOGRAPHY(POINT, 4326),
+        created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX idx_incidents_type ON incidents(incident_type_code);
+    CREATE INDEX idx_incidents_camera ON incidents(camera_id);
+    CREATE INDEX idx_incidents_detected_at ON incidents(detected_at DESC);
+    CREATE INDEX idx_incidents_status ON incidents(status);
+
+    CREATE TABLE ai_model_versions (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        model_family    VARCHAR(50) NOT NULL,
+        model_name      VARCHAR(100) NOT NULL,
+        version         VARCHAR(50) NOT NULL,
+        is_active       BOOLEAN NOT NULL DEFAULT true,
+        metadata        JSONB DEFAULT '{}',
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (model_family, model_name, version)
+    );
+
+    CREATE TABLE ai_results (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        incident_id     UUID REFERENCES incidents(id) ON DELETE CASCADE,
+        camera_id       UUID NOT NULL REFERENCES cameras(id),
+        model_version_id UUID NOT NULL REFERENCES ai_model_versions(id),
+        frame_timestamp TIMESTAMPTZ NOT NULL,
+        result_type     VARCHAR(50) NOT NULL,
+        payload         JSONB NOT NULL,
+        confidence      NUMERIC(5,2) NOT NULL,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX idx_ai_results_incident ON ai_results(incident_id);
+
+    CREATE TABLE tracked_subjects (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        incident_id     UUID REFERENCES incidents(id) ON DELETE CASCADE,
+        subject_type    VARCHAR(20) NOT NULL,
+        attributes      JSONB NOT NULL DEFAULT '{}',
+        first_seen_at   TIMESTAMPTZ NOT NULL,
+        last_seen_at    TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE subject_movements (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tracked_subject_id  UUID NOT NULL REFERENCES tracked_subjects(id) ON DELETE CASCADE,
+        camera_id           UUID NOT NULL REFERENCES cameras(id),
+        seen_at             TIMESTAMPTZ NOT NULL,
+        bounding_box        JSONB NOT NULL,
+        confidence          NUMERIC(5,2) NOT NULL
+    );
+
+    CREATE TABLE evidence (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        incident_id     UUID NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+        evidence_type   VARCHAR(20) NOT NULL,
+        storage_url     TEXT NOT NULL,
+        buffer_segment  VARCHAR(20) NOT NULL,
+        duration_seconds INTEGER,
+        checksum_sha256 VARCHAR(64) NOT NULL,
+        metadata        JSONB DEFAULT '{}',
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE notification_policies (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        site_id             UUID NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+        incident_type_code  VARCHAR(50) NOT NULL REFERENCES incident_types(code),
+        requires_confirmation BOOLEAN NOT NULL DEFAULT true,
+        auto_escalate_threshold NUMERIC(5,2),
+        recipients          JSONB NOT NULL DEFAULT '[]',
+        channels             JSONB NOT NULL DEFAULT '[]'
+    );
+
+    CREATE TABLE notifications (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        incident_id     UUID NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+        channel         VARCHAR(20) NOT NULL,
+        recipient       VARCHAR(255) NOT NULL,
+        status          VARCHAR(20) NOT NULL DEFAULT 'pending',
+        sent_at         TIMESTAMPTZ,
+        delivered_at    TIMESTAMPTZ,
+        error_message   TEXT,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE audit_logs (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id         UUID REFERENCES users(id),
+        action          VARCHAR(100) NOT NULL,
+        entity_type     VARCHAR(50) NOT NULL,
+        entity_id       UUID,
+        ip_address      INET,
+        metadata        JSONB DEFAULT '{}',
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE settings (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+        key             VARCHAR(100) NOT NULL,
+        value           JSONB NOT NULL,
+        updated_by      UUID REFERENCES users(id),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (organization_id, key)
+    );
+
+    -- Seed taxonomy
+    INSERT INTO incident_types (code, category, display_name, default_severity, default_response) VALUES
+    ('theft', 'crime', 'Theft', 'medium', 'Notify security personnel'),
+    ('burglary', 'crime', 'Burglary', 'high', 'Notify police and homeowner'),
+    ('robbery', 'crime', 'Robbery', 'critical', 'Dispatch police immediately'),
+    ('armed_robbery', 'crime', 'Armed Robbery', 'critical', 'Dispatch police immediately, do not approach'),
+    ('assault', 'crime', 'Assault', 'high', 'Dispatch police'),
+    ('fighting', 'crime', 'Fighting', 'medium', 'Notify security personnel'),
+    ('knife_attack', 'crime', 'Knife Attack', 'critical', 'Dispatch police and ambulance'),
+    ('gun_threat', 'crime', 'Gun Threat', 'critical', 'Dispatch police immediately'),
+    ('trespassing', 'crime', 'Trespassing', 'low', 'Notify security personnel'),
+    ('vandalism', 'crime', 'Vandalism', 'low', 'Notify security personnel'),
+    ('suspicious_loitering', 'crime', 'Suspicious Loitering', 'low', 'Notify security personnel'),
+    ('vehicle_theft', 'crime', 'Vehicle Theft', 'medium', 'Notify police'),
+    ('vehicle_collision', 'traffic', 'Vehicle Collision', 'high', 'Dispatch ambulance and police'),
+    ('motorcycle_accident', 'traffic', 'Motorcycle Accident', 'high', 'Dispatch ambulance'),
+    ('pedestrian_accident', 'traffic', 'Pedestrian Accident', 'critical', 'Dispatch ambulance immediately'),
+    ('hit_and_run', 'traffic', 'Hit and Run', 'high', 'Notify police'),
+    ('vehicle_fire', 'fire_disaster', 'Vehicle Fire', 'critical', 'Dispatch fire department'),
+    ('overturned_vehicle', 'traffic', 'Overturned Vehicle', 'high', 'Dispatch ambulance and police'),
+    ('fire', 'fire_disaster', 'Fire', 'critical', 'Dispatch fire department'),
+    ('smoke', 'fire_disaster', 'Smoke', 'high', 'Investigate, prepare fire department dispatch'),
+    ('explosion', 'fire_disaster', 'Explosion', 'critical', 'Dispatch fire, police, and ambulance'),
+    ('person_collapse', 'medical', 'Person Collapse', 'critical', 'Dispatch ambulance'),
+    ('fall_detection', 'medical', 'Fall Detection', 'high', 'Dispatch ambulance if unresponsive'),
+    ('unconscious_person', 'medical', 'Unconscious Person', 'critical', 'Dispatch ambulance immediately'),
+    ('crowd_panic', 'public_safety', 'Crowd Panic', 'high', 'Notify security and police'),
+    ('stampede', 'public_safety', 'Stampede', 'critical', 'Dispatch police and ambulance'),
+    ('restricted_area_entry', 'public_safety', 'Restricted Area Entry', 'medium', 'Notify security personnel'),
+    ('abandoned_object', 'public_safety', 'Abandoned Object', 'medium', 'Notify security, monitor'),
+    ('suspicious_package', 'public_safety', 'Suspicious Package', 'high', 'Notify security and police')
+    ON CONFLICT (code) DO NOTHING;
+
+    -- Seed administrative hierarchy
+    INSERT INTO organizations (id, name, type) VALUES ('00000000-0000-0000-0000-000000000001', 'Sentinel AI Headquarters', 'enterprise') ON CONFLICT DO NOTHING;
+    INSERT INTO sites (id, organization_id, name, address, timezone) VALUES ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Main Campus', '123 Security Way', 'UTC') ON CONFLICT DO NOTHING;
+    INSERT INTO zones (id, site_id, name, description) VALUES ('00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000002', 'Main Entrance', 'Front entrance lobby') ON CONFLICT DO NOTHING;
+
+    -- Seed roles & permissions
+    INSERT INTO roles (id, name, description) VALUES
+    ('10000000-0000-0000-0000-000000000001', 'admin', 'System Admin'),
+    ('10000000-0000-0000-0000-000000000002', 'operator', 'Control room operator')
+    ON CONFLICT DO NOTHING;
+
+    INSERT INTO permissions (id, code, description) VALUES
+    ('20000000-0000-0000-0000-000000000001', 'user:create', 'Create users'),
+    ('20000000-0000-0000-0000-000000000002', 'user:read', 'Read profiles'),
+    ('20000000-0000-0000-0000-000000000003', 'user:write', 'Update profiles'),
+    ('20000000-0000-0000-0000-000000000004', 'user:delete', 'Delete profiles'),
+    ('20000000-0000-0000-0000-000000000005', 'role:read', 'Read roles'),
+    ('20000000-0000-0000-0000-000000000006', 'role:write', 'Update roles'),
+    ('20000000-0000-0000-0000-000000000007', 'camera:create', 'Create cameras'),
+    ('20000000-0000-0000-0000-000000000008', 'camera:read', 'Read cameras'),
+    ('20000000-0000-0000-0000-000000000009', 'camera:write', 'Update cameras'),
+    ('20000000-0000-0000-0000-000000000010', 'camera:delete', 'Delete cameras'),
+    ('20000000-0000-0000-0000-000000000011', 'incident:create', 'Create incidents'),
+    ('20000000-0000-0000-0000-000000000012', 'incident:read', 'Read incidents'),
+    ('20000000-0000-0000-0000-000000000013', 'incident:write', 'Update incidents'),
+    ('20000000-0000-0000-0000-000000000014', 'incident:delete', 'Delete incidents'),
+    ('20000000-0000-0000-0000-000000000015', 'policy:read', 'Read policy'),
+    ('20000000-0000-0000-0000-000000000016', 'policy:write', 'Update policy'),
+    ('20000000-0000-0000-0000-000000000017', 'audit:read', 'Read audit log')
+    ON CONFLICT DO NOTHING;
+
+    INSERT INTO role_permissions (role_id, permission_id) SELECT '10000000-0000-0000-0000-000000000001', id FROM permissions ON CONFLICT DO NOTHING;
+
+    -- Seed Admin User (admin@sentinel.ai / adminpassword)
+    INSERT INTO users (id, organization_id, email, password_hash, full_name, role_id, is_active)
+    VALUES ('30000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', 'admin@sentinel.ai', crypt('adminpassword', gen_salt('bf', 12)), 'System Admin', '10000000-0000-0000-0000-000000000001', true)
+    ON CONFLICT DO NOTHING;
